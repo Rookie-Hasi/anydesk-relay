@@ -28,7 +28,7 @@ def load_config():
     new_config = {
         "id": generate_device_id(),
         "pin": "1234",
-        "server_url": "ws://localhost:8765",
+        "server_url": "wss://anydesk-relay-production.up.railway.app",
         "quality": 60,
         "fps_limit": 30
     }
