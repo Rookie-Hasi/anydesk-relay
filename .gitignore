@@ -1,0 +1,13 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local client private configuration (Device ID & PIN)
+client/config.json
+
+# Large compiled binaries (not needed by Railway/Render server)
+AnyDeskClone.exe
+build/
+dist/
+*.spec
