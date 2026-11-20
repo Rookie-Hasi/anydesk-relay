@@ -418,16 +418,24 @@ class AnyDeskCloneApp(ctk.CTk):
 
     async def _stream_sender_worker(self):
         """Dedicated high-speed loop: always transmits the latest frame with zero queue delay"""
-        while self.websocket and not self.websocket.closed:
+        logger.info("Stream sender worker started.")
+        while self.websocket:
+            try:
+                if hasattr(self.websocket, "state") and self.websocket.state.name != "OPEN":
+                    break
+            except Exception:
+                pass
+
             await self.frame_send_event.wait()
             self.frame_send_event.clear()
             frame = self.latest_frame_to_send
-            if frame:
+            if frame and self.websocket:
                 try:
                     await self.websocket.send(frame)
                 except Exception as e:
                     logger.error(f"Error sending frame: {e}")
                     break
+        logger.info("Stream sender worker stopped.")
 
     async def _listen_server_messages(self):
         try:

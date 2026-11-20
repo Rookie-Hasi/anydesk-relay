@@ -4,19 +4,20 @@ import logging
 logger = logging.getLogger("InputHandler")
 user32 = ctypes.windll.user32
 
-# Mouse flags
-MOUSEEVENTF_MOVE       = 0x0001
-MOUSEEVENTF_LEFTDOWN   = 0x0002
-MOUSEEVENTF_LEFTUP     = 0x0004
-MOUSEEVENTF_RIGHTDOWN  = 0x0008
-MOUSEEVENTF_RIGHTUP    = 0x0010
-MOUSEEVENTF_MIDDLEDOWN = 0x0020
-MOUSEEVENTF_MIDDLEUP   = 0x0040
-MOUSEEVENTF_WHEEL      = 0x0800
+# Native Windows Hardware Mouse Flags
+MOUSEEVENTF_MOVE        = 0x0001
+MOUSEEVENTF_LEFTDOWN    = 0x0002
+MOUSEEVENTF_LEFTUP      = 0x0004
+MOUSEEVENTF_RIGHTDOWN   = 0x0008
+MOUSEEVENTF_RIGHTUP     = 0x0010
+MOUSEEVENTF_MIDDLEDOWN  = 0x0020
+MOUSEEVENTF_MIDDLEUP    = 0x0040
+MOUSEEVENTF_WHEEL       = 0x0800
+MOUSEEVENTF_ABSOLUTE    = 0x8000
 
 # Key flags
-KEYEVENTF_KEYUP        = 0x0002
-KEYEVENTF_EXTENDEDKEY  = 0x0001
+KEYEVENTF_KEYUP         = 0x0002
+KEYEVENTF_EXTENDEDKEY   = 0x0001
 
 # Virtual Key mapping for special keys
 SPECIAL_KEYS = {
@@ -57,32 +58,34 @@ class WindowsInputHandler:
         self.screen_height = user32.GetSystemMetrics(1)
 
     def handle_mouse(self, action, x_ratio, y_ratio, button=1, delta=0):
-        # Convert ratio (0.0 to 1.0) into actual pixel coordinates
-        x = int(x_ratio * self.screen_width)
-        y = int(y_ratio * self.screen_height)
+        # Convert normalized 0.0 - 1.0 coordinates to Windows absolute mouse scale (0 - 65535)
+        # Using MOUSEEVENTF_ABSOLUTE produces butter-smooth motion without cursor flickering
+        abs_x = max(0, min(65535, int(x_ratio * 65535)))
+        abs_y = max(0, min(65535, int(y_ratio * 65535)))
 
         if action == "move":
-            user32.SetCursorPos(x, y)
+            user32.mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, abs_x, abs_y, 0, 0)
         elif action == "down":
-            user32.SetCursorPos(x, y)
+            flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
             if button == 1:
-                user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                flags |= MOUSEEVENTF_LEFTDOWN
             elif button == 3:
-                user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+                flags |= MOUSEEVENTF_RIGHTDOWN
             elif button == 2:
-                user32.mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0)
+                flags |= MOUSEEVENTF_MIDDLEDOWN
+            user32.mouse_event(flags, abs_x, abs_y, 0, 0)
         elif action == "up":
-            user32.SetCursorPos(x, y)
+            flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
             if button == 1:
-                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                flags |= MOUSEEVENTF_LEFTUP
             elif button == 3:
-                user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+                flags |= MOUSEEVENTF_RIGHTUP
             elif button == 2:
-                user32.mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0)
+                flags |= MOUSEEVENTF_MIDDLEUP
+            user32.mouse_event(flags, abs_x, abs_y, 0, 0)
         elif action == "scroll":
-            # delta in Windows mouse_event is typically 120 per notch
             wheel_delta = int(delta * 120)
-            user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, wheel_delta, 0)
+            user32.mouse_event(MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE, abs_x, abs_y, wheel_delta, 0)
 
     def handle_keyboard(self, action, key_name, char=""):
         vk_code = 0
