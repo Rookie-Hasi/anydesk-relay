@@ -146,7 +146,15 @@ async def handle_client(websocket):
                         }))
                         logger.info(f"Host {client_id} rejected request from {requester_id}")
 
-                # 5. Relay input commands (mouse, keyboard) to the Host
+                # 4d. WebRTC P2P Signaling (Offer, Answer, ICE Candidates)
+                elif msg_type in ("webrtc_offer", "webrtc_answer", "webrtc_candidate"):
+                    target_id = str(data.get("target_id", "")).replace(" ", "").strip()
+                    if target_id in clients and is_ws_open(clients[target_id]["ws"]):
+                        data["from_id"] = client_id
+                        await clients[target_id]["ws"].send(json.dumps(data))
+                        logger.info(f"Relayed WebRTC signaling ({msg_type}) from {client_id} to {target_id}")
+
+                # 5. Relay input commands (fallback if WebRTC data channel is negotiating)
                 elif msg_type in ("mouse_event", "key_event", "resolution_info"):
                     if client_id and client_id in clients:
                         partner_id = clients[client_id].get("in_session_with")
