@@ -12,8 +12,8 @@ import logging
 
 from config import load_config, save_config, format_id
 from input_handler import WindowsInputHandler
-from screen_streamer import ScreenStreamer
 from viewer import RemoteViewerWindow
+from webrtc_manager import WebRTCManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("DeskClient")
@@ -42,14 +42,17 @@ class AnyDeskCloneApp(ctk.CTk):
         self.streamer = None
         self.input_handler = WindowsInputHandler()
 
-        # Dedicated latest-frame buffer (prevents queue backup)
-        self.latest_frame_to_send = None
-        self.frame_send_event = asyncio.Event()
-
         # Asyncio event loop running on a dedicated background thread
         self.loop = asyncio.new_event_loop()
         self.net_thread = threading.Thread(target=self._run_async_loop, daemon=True)
         self.net_thread.start()
+
+        # WebRTC Direct P2P Manager
+        self.webrtc = WebRTCManager(
+            send_signaling_callback=self._send_json,
+            input_handler=self.input_handler,
+            frame_callback=self._on_webrtc_frame
+        )
 
         # Build UI
         self._build_ui()
@@ -407,35 +410,14 @@ class AnyDeskCloneApp(ctk.CTk):
                 "id": self.my_id,
                 "pin": self.my_pin
             }))
-            # Start message listener and dedicated fast frame sender
+            # Start message listener
             asyncio.create_task(self._listen_server_messages())
-            asyncio.create_task(self._stream_sender_worker())
         except Exception as e:
             logger.error(f"Failed to connect to server: {e}")
             self._set_server_status("🔴 Server Offline", "#ef4444")
             await asyncio.sleep(4)
             asyncio.create_task(self._async_connect())
 
-    async def _stream_sender_worker(self):
-        """Dedicated high-speed loop: always transmits the latest frame with zero queue delay"""
-        logger.info("Stream sender worker started.")
-        while self.websocket:
-            try:
-                if hasattr(self.websocket, "state") and self.websocket.state.name != "OPEN":
-                    break
-            except Exception:
-                pass
-
-            await self.frame_send_event.wait()
-            self.frame_send_event.clear()
-            frame = self.latest_frame_to_send
-            if frame and self.websocket:
-                try:
-                    await self.websocket.send(frame)
-                except Exception as e:
-                    logger.error(f"Error sending frame: {e}")
-                    break
-        logger.info("Stream sender worker stopped.")
 
     async def _listen_server_messages(self):
         try:
@@ -471,12 +453,31 @@ class AnyDeskCloneApp(ctk.CTk):
                     if status == "success":
                         target_id = data.get("target_id")
                         self.after(0, self._open_viewer, target_id)
+                        # Initialize direct P2P WebRTC session
+                        asyncio.create_task(self.webrtc.start_controller_session(target_id))
                     elif status == "pending_approval":
                         msg = data.get("message", "Waiting for remote user to accept...")
                         self.lbl_connect_status.configure(text=msg, text_color="#f59e0b")
                     else:
                         err_msg = data.get("message", "Connection failed.")
                         self.after(0, self._show_connect_error, err_msg)
+
+                # WebRTC Direct P2P Signaling
+                elif msg_type == "webrtc_offer":
+                    from_id = data.get("from_id")
+                    sdp = data.get("sdp")
+                    logger.info(f"Received WebRTC offer from {from_id}")
+                    asyncio.create_task(self.webrtc.handle_webrtc_offer(from_id, sdp))
+
+                elif msg_type == "webrtc_answer":
+                    sdp = data.get("sdp")
+                    logger.info("Received WebRTC answer from host")
+                    asyncio.create_task(self.webrtc.handle_webrtc_answer(sdp))
+
+                elif msg_type == "webrtc_candidate":
+                    candidate = data.get("candidate")
+                    if candidate:
+                        asyncio.create_task(self.webrtc.handle_ice_candidate(candidate))
 
                 # Incoming connection request prompt for the Host PC
                 elif msg_type == "incoming_prompt":
@@ -604,6 +605,17 @@ class AnyDeskCloneApp(ctk.CTk):
             "pin": pin
         })
 
+    def _send_viewer_cmd(self, cmd_dict):
+        # Direct P2P UDP DataChannel (0ms cloud latency)
+        sent_p2p = self.webrtc.send_input_command(cmd_dict)
+        if not sent_p2p:
+            # Fallback to websocket relay if P2P channel is still negotiating
+            self._send_json(cmd_dict)
+
+    def _on_webrtc_frame(self, img_bgr):
+        if self.viewer_window:
+            self.after(0, self.viewer_window.update_bgr_frame, img_bgr)
+
     def _open_viewer(self, target_id):
         self.btn_connect.configure(state="normal")
         self.lbl_connect_status.configure(text="Connected!", text_color="#22c55e")
@@ -612,7 +624,7 @@ class AnyDeskCloneApp(ctk.CTk):
             self.viewer_window = RemoteViewerWindow(
                 self, 
                 target_id, 
-                send_cmd_callback=self._send_json, 
+                send_cmd_callback=self._send_viewer_cmd, 
                 disconnect_callback=self._disconnect_session
             )
         else:
@@ -624,26 +636,29 @@ class AnyDeskCloneApp(ctk.CTk):
         messagebox.showerror("Connection Notice", message)
 
     def _start_host_streaming(self):
-        if self.streamer is None or not self.streamer.is_running:
-            self.streamer = ScreenStreamer(
-                send_callback=self._push_new_frame,
-                quality=self.config.get("quality", 55),
-                fps_limit=self.config.get("fps_limit", 25),
-                scale=self.config.get("scale", 0.75)
-            )
-            self.streamer.start()
+        # WebRTC ScreenVideoTrack handles desktop capture on the host automatically.
+        # No separate ScreenStreamer needed. The WebRTC offer/answer flow already
+        # started ScreenVideoTrack when handle_webrtc_offer() was called.
+        logger.info("Host WebRTC streaming active via ScreenVideoTrack (P2P direct)")
 
     def _push_new_frame(self, binary_data):
-        """Called by streamer thread: replaces latest frame and notifies sender loop"""
-        self.latest_frame_to_send = binary_data
-        self.loop.call_soon_threadsafe(self.frame_send_event.set)
+        pass  # Legacy stub — not used in WebRTC mode
 
     def _disconnect_session(self):
         logger.info("Disconnecting session...")
         self._send_json({"type": "end_session"})
+        asyncio.run_coroutine_threadsafe(self.webrtc.close(), self.loop)
         self._handle_session_ended()
 
     def _handle_session_ended(self):
+        # Close WebRTC peer connection
+        asyncio.run_coroutine_threadsafe(self.webrtc.close(), self.loop)
+        # Reinitialize WebRTC manager so next session starts clean
+        self.webrtc = WebRTCManager(
+            send_signaling_callback=self._send_json,
+            input_handler=self.input_handler,
+            frame_callback=self._on_webrtc_frame
+        )
         if self.streamer:
             self.streamer.stop()
             self.streamer = None

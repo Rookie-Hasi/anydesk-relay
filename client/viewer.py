@@ -173,6 +173,30 @@ class RemoteViewerWindow(ctk.CTkToplevel):
             "char": event.char
         })
 
+    def update_bgr_frame(self, img_bgr):
+        try:
+            if img_bgr.shape[1] != self.canvas_width or img_bgr.shape[0] != self.canvas_height:
+                img_bgr = cv2.resize(img_bgr, (self.canvas_width, self.canvas_height), interpolation=cv2.INTER_LINEAR)
+
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(img_rgb)
+            self.photo_image = ImageTk.PhotoImage(pil_image, master=self.canvas)
+            self.canvas.itemconfig(self.image_item, image=self.photo_image)
+
+            if self.text_item:
+                self.canvas.delete(self.text_item)
+                self.text_item = None
+
+            self.frame_count += 1
+            now = time.time()
+            if now - self.last_frame_time >= 1.0:
+                self.current_fps = self.frame_count
+                self.frame_count = 0
+                self.last_frame_time = now
+                self.lbl_fps.configure(text=f"Direct P2P: {self.current_fps} FPS", text_color="#22c55e")
+        except Exception as e:
+            logger.error(f"Error rendering bgr frame: {e}")
+
     def update_frame(self, jpeg_bytes):
         try:
             # High-speed OpenCV decoding & scaling
