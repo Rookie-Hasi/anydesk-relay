@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger("ScreenStreamer")
 
 class ScreenStreamer:
-    def __init__(self, send_callback, quality=60, fps_limit=30, scale=0.85):
+    def __init__(self, send_callback, quality=55, fps_limit=25, scale=0.75):
         self.send_callback = send_callback
         self.quality = quality
         self.fps_limit = fps_limit
@@ -27,7 +27,7 @@ class ScreenStreamer:
     def stop(self):
         self.is_running = False
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
+            self.thread.join(timeout=1.5)
         logger.info("Screen capture streaming stopped.")
 
     def _capture_loop(self):
@@ -42,31 +42,28 @@ class ScreenStreamer:
 
         sct = mss.MSS()
         monitor = sct.monitors[1]  # Primary monitor
-
-        target_interval = 1.0 / self.fps_limit if self.fps_limit > 0 else 0.033
+        target_interval = 1.0 / self.fps_limit if self.fps_limit > 0 else 0.04
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(self.quality)]
 
         while self.is_running:
             start_time = time.time()
             try:
-                # Capture frame
+                # 1. Grab raw screen pixels
                 raw_frame = sct.grab(monitor)
                 frame = np.array(raw_frame, dtype=np.uint8)
-                # mss outputs BGRA, convert to BGR for OpenCV
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
-                # Optional scaling for higher performance and lower bandwidth
+                # 2. Scale down slightly for crisp balance between speed & bandwidth
                 if self.scale != 1.0:
                     width = int(frame.shape[1] * self.scale)
                     height = int(frame.shape[0] * self.scale)
                     frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
 
-                # Compress to JPEG
-                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), int(self.quality)]
-                success, encoded_img = cv2.imencode('.jpg', frame, encode_param)
-
+                # 3. Fast OpenCV JPEG encoding
+                success, encoded_img = cv2.imencode('.jpg', frame, encode_params)
                 if success:
                     jpeg_bytes = encoded_img.tobytes()
-                    # Deliver bytes to network sender callback
+                    # Deliver directly to network sender
                     self.send_callback(jpeg_bytes)
 
             except Exception as e:

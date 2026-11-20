@@ -26,22 +26,25 @@ class AnyDeskCloneApp(ctk.CTk):
         super().__init__()
 
         self.title("AnyDesk Clone - Remote Desktop")
-        self.geometry("820x540")
+        self.geometry("820x570")
         self.resizable(False, False)
 
-        # Load configuration
+        # Load permanent configuration (stored in %APPDATA%\AnyDeskClone\config.json)
         self.config = load_config()
         self.my_id = self.config["id"]
-        self.my_pin = self.config["pin"]
-        self.server_url = self.config.get("server_url", "ws://localhost:8765")
+        self.my_pin = self.config.get("pin", "1234")
+        self.server_url = self.config.get("server_url", "wss://anydesk-relay-production.up.railway.app")
 
         # Network & Session State
         self.websocket = None
         self.is_connected_to_server = False
-        self.active_session_partner = None
         self.viewer_window = None
         self.streamer = None
         self.input_handler = WindowsInputHandler()
+
+        # Dedicated latest-frame buffer (prevents queue backup)
+        self.latest_frame_to_send = None
+        self.frame_send_event = asyncio.Event()
 
         # Asyncio event loop running on a dedicated background thread
         self.loop = asyncio.new_event_loop()
@@ -54,8 +57,7 @@ class AnyDeskCloneApp(ctk.CTk):
         # Connect to signaling server
         self.connect_to_server()
 
-        # Periodic presence checker for entered remote ID
-        self.last_checked_remote_id = ""
+        # Periodic presence checker
         self.after(2000, self._periodic_presence_check)
 
         self.protocol("WM_DELETE_WINDOW", self.on_app_close)
@@ -85,7 +87,7 @@ class AnyDeskCloneApp(ctk.CTk):
         )
         self.server_status_badge.pack(side="right", padx=20, pady=15)
 
-        # 2. Main Content Frame (Two side-by-side cards: This Desk vs Remote Desk)
+        # 2. Main Content Frame (Two side-by-side cards)
         self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.content_frame.pack(fill="both", expand=True, padx=20, pady=15)
 
@@ -95,23 +97,23 @@ class AnyDeskCloneApp(ctk.CTk):
 
         self.lbl_this_desk = ctk.CTkLabel(
             self.left_card, 
-            text="THIS DESK", 
+            text="THIS DESK (YOUR PERMANENT ID)", 
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#a1a1aa"
         )
-        self.lbl_this_desk.pack(anchor="w", padx=20, pady=(20, 5))
+        self.lbl_this_desk.pack(anchor="w", padx=20, pady=(15, 3))
 
         self.lbl_desk_sub = ctk.CTkLabel(
             self.left_card, 
-            text="Share this number to let others control this PC.", 
+            text="Share this number to let others connect to this PC.", 
             font=ctk.CTkFont(size=11),
             text_color="#71717a"
         )
-        self.lbl_desk_sub.pack(anchor="w", padx=20, pady=(0, 10))
+        self.lbl_desk_sub.pack(anchor="w", padx=20, pady=(0, 8))
 
         # ID Display Box
         self.id_box = ctk.CTkFrame(self.left_card, fg_color="#27272a", corner_radius=8)
-        self.id_box.pack(fill="x", padx=20, pady=10)
+        self.id_box.pack(fill="x", padx=20, pady=5)
 
         self.lbl_my_id = ctk.CTkLabel(
             self.id_box, 
@@ -119,7 +121,7 @@ class AnyDeskCloneApp(ctk.CTk):
             font=ctk.CTkFont(size=26, weight="bold"),
             text_color="#38bdf8"
         )
-        self.lbl_my_id.pack(pady=(12, 4))
+        self.lbl_my_id.pack(pady=(10, 4))
 
         self.btn_copy_id = ctk.CTkButton(
             self.id_box, 
@@ -130,19 +132,19 @@ class AnyDeskCloneApp(ctk.CTk):
             hover_color="#52525b",
             command=self.copy_id_to_clipboard
         )
-        self.btn_copy_id.pack(pady=(0, 12))
+        self.btn_copy_id.pack(pady=(0, 10))
 
         # Security PIN Section
         self.lbl_pin_title = ctk.CTkLabel(
             self.left_card, 
-            text="Security PIN (Required to connect to you):", 
+            text="Unattended Access PIN (Optional):", 
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#e4e4e7"
         )
-        self.lbl_pin_title.pack(anchor="w", padx=20, pady=(15, 5))
+        self.lbl_pin_title.pack(anchor="w", padx=20, pady=(12, 3))
 
         self.pin_row = ctk.CTkFrame(self.left_card, fg_color="transparent")
-        self.pin_row.pack(fill="x", padx=20, pady=5)
+        self.pin_row.pack(fill="x", padx=20, pady=3)
 
         self.entry_my_pin = ctk.CTkEntry(
             self.pin_row, 
@@ -160,6 +162,15 @@ class AnyDeskCloneApp(ctk.CTk):
         )
         self.btn_save_pin.pack(side="left", padx=10)
 
+        self.lbl_access_note = ctk.CTkLabel(
+            self.left_card, 
+            text="💡 If a caller doesn't know your PIN, you will see\nan 'Accept / Reject' popup on this screen.", 
+            font=ctk.CTkFont(size=11),
+            text_color="#71717a",
+            justify="left"
+        )
+        self.lbl_access_note.pack(anchor="w", padx=20, pady=(8, 0))
+
         # RIGHT CARD: Remote Device (Controller)
         self.right_card = ctk.CTkFrame(self.content_frame, width=380, corner_radius=12, fg_color="#202024")
         self.right_card.pack(side="right", fill="both", expand=True, padx=(10, 0))
@@ -170,7 +181,7 @@ class AnyDeskCloneApp(ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#a1a1aa"
         )
-        self.lbl_remote_desk.pack(anchor="w", padx=20, pady=(20, 5))
+        self.lbl_remote_desk.pack(anchor="w", padx=20, pady=(15, 3))
 
         self.lbl_remote_sub = ctk.CTkLabel(
             self.right_card, 
@@ -178,7 +189,7 @@ class AnyDeskCloneApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color="#71717a"
         )
-        self.lbl_remote_sub.pack(anchor="w", padx=20, pady=(0, 10))
+        self.lbl_remote_sub.pack(anchor="w", padx=20, pady=(0, 8))
 
         # Remote ID Input + Online/Offline Badge
         self.lbl_remote_id_title = ctk.CTkLabel(
@@ -187,10 +198,10 @@ class AnyDeskCloneApp(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#e4e4e7"
         )
-        self.lbl_remote_id_title.pack(anchor="w", padx=20, pady=(5, 5))
+        self.lbl_remote_id_title.pack(anchor="w", padx=20, pady=(5, 3))
 
         self.remote_id_row = ctk.CTkFrame(self.right_card, fg_color="transparent")
-        self.remote_id_row.pack(fill="x", padx=20, pady=5)
+        self.remote_id_row.pack(fill="x", padx=20, pady=3)
 
         self.entry_remote_id = ctk.CTkEntry(
             self.remote_id_row, 
@@ -201,7 +212,6 @@ class AnyDeskCloneApp(ctk.CTk):
         self.entry_remote_id.pack(side="left")
         self.entry_remote_id.bind("<KeyRelease>", self._on_remote_id_typed)
 
-        # Real-time Status Badge
         self.lbl_remote_status = ctk.CTkLabel(
             self.remote_id_row, 
             text="⚪ Checking", 
@@ -210,23 +220,23 @@ class AnyDeskCloneApp(ctk.CTk):
         )
         self.lbl_remote_status.pack(side="left", padx=10)
 
-        # Remote PIN Input
+        # Remote PIN Input (Optional if unattended access)
         self.lbl_remote_pin_title = ctk.CTkLabel(
             self.right_card, 
-            text="Remote Security PIN:", 
+            text="Remote Security PIN (Optional - or request access):", 
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#e4e4e7"
         )
-        self.lbl_remote_pin_title.pack(anchor="w", padx=20, pady=(15, 5))
+        self.lbl_remote_pin_title.pack(anchor="w", padx=20, pady=(12, 3))
 
         self.entry_remote_pin = ctk.CTkEntry(
             self.right_card, 
             show="*", 
-            placeholder_text="Enter PIN",
-            font=ctk.CTkFont(size=14),
-            width=200
+            placeholder_text="Enter PIN (Leave blank to prompt host)",
+            font=ctk.CTkFont(size=13),
+            width=260
         )
-        self.entry_remote_pin.pack(anchor="w", padx=20, pady=5)
+        self.entry_remote_pin.pack(anchor="w", padx=20, pady=3)
 
         # Connect Button
         self.btn_connect = ctk.CTkButton(
@@ -238,9 +248,8 @@ class AnyDeskCloneApp(ctk.CTk):
             hover_color="#dc2626",
             command=self.request_connection
         )
-        self.btn_connect.pack(fill="x", padx=20, pady=(25, 10))
+        self.btn_connect.pack(fill="x", padx=20, pady=(20, 5))
 
-        # Status text below connect button
         self.lbl_connect_status = ctk.CTkLabel(
             self.right_card, 
             text="", 
@@ -249,21 +258,33 @@ class AnyDeskCloneApp(ctk.CTk):
         )
         self.lbl_connect_status.pack(padx=20)
 
-        # 3. Bottom Settings Bar
+        # 3. Bottom Settings & Background Bar
         self.footer_frame = ctk.CTkFrame(self, height=45, corner_radius=0, fg_color="#18181b")
         self.footer_frame.pack(fill="x", side="bottom")
 
+        self.btn_bg = ctk.CTkButton(
+            self.footer_frame, 
+            text="🗕 Run in Background", 
+            width=140, 
+            height=28,
+            fg_color="#27272a",
+            hover_color="#3f3f46",
+            font=ctk.CTkFont(size=11),
+            command=self.minimize_to_background
+        )
+        self.btn_bg.pack(side="left", padx=15, pady=8)
+
         self.lbl_srv = ctk.CTkLabel(
             self.footer_frame, 
-            text="Relay Server:", 
+            text="Server:", 
             font=ctk.CTkFont(size=11),
             text_color="#a1a1aa"
         )
-        self.lbl_srv.pack(side="left", padx=(15, 5), pady=8)
+        self.lbl_srv.pack(side="left", padx=(10, 5), pady=8)
 
         self.entry_server_url = ctk.CTkEntry(
             self.footer_frame, 
-            width=240, 
+            width=270, 
             height=26, 
             font=ctk.CTkFont(size=11)
         )
@@ -272,13 +293,25 @@ class AnyDeskCloneApp(ctk.CTk):
 
         self.btn_reconnect = ctk.CTkButton(
             self.footer_frame, 
-            text="Update / Reconnect", 
-            width=130, 
+            text="Reconnect", 
+            width=80, 
             height=26,
             font=ctk.CTkFont(size=11),
             command=self.update_server_url
         )
-        self.btn_reconnect.pack(side="left", padx=10, pady=8)
+        self.btn_reconnect.pack(side="left", padx=5, pady=8)
+
+        self.btn_exit = ctk.CTkButton(
+            self.footer_frame, 
+            text="Quit App", 
+            width=70, 
+            height=26,
+            fg_color="#7f1d1d",
+            hover_color="#991b1b",
+            font=ctk.CTkFont(size=11),
+            command=self.quit_app
+        )
+        self.btn_exit.pack(side="right", padx=15, pady=8)
 
     # ------------------ Action Handlers ------------------
 
@@ -290,17 +323,13 @@ class AnyDeskCloneApp(ctk.CTk):
 
     def save_my_pin(self):
         new_pin = self.entry_my_pin.get().strip()
-        if not new_pin:
-            messagebox.showwarning("Warning", "PIN cannot be empty!")
-            return
         self.my_pin = new_pin
         self.config["pin"] = new_pin
         save_config(self.config)
         
-        # Send update to server if connected
         if self.websocket:
             self._send_json({"type": "update_pin", "pin": new_pin})
-        messagebox.showinfo("Success", "Security PIN updated successfully!")
+        messagebox.showinfo("Success", "Security PIN saved successfully!")
 
     def update_server_url(self):
         new_url = self.entry_server_url.get().strip()
@@ -309,6 +338,35 @@ class AnyDeskCloneApp(ctk.CTk):
             self.config["server_url"] = new_url
             save_config(self.config)
             self.connect_to_server()
+
+    def minimize_to_background(self):
+        self.withdraw()  # Hide window into background
+        # Create a notification popup or console log
+        logger.info("AnyDesk Clone is running in the background. Connections will be accepted.")
+
+    def restore_from_background(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def quit_app(self):
+        self._disconnect_session()
+        self.destroy()
+        sys.exit(0)
+
+    def on_app_close(self):
+        # Instead of suddenly terminating, ask user or minimize to background
+        res = messagebox.askyesnocancel(
+            "Close AnyDesk Clone",
+            "Do you want to keep running in the background to accept remote connections?\n\n"
+            "• Yes: Keep running in background\n"
+            "• No: Completely exit the app\n"
+            "• Cancel: Do nothing"
+        )
+        if res is True:
+            self.minimize_to_background()
+        elif res is False:
+            self.quit_app()
 
     def _on_remote_id_typed(self, event=None):
         raw = self.entry_remote_id.get().replace(" ", "").strip()
@@ -337,23 +395,44 @@ class AnyDeskCloneApp(ctk.CTk):
 
         self._set_server_status("🟡 Connecting...", "#eab308")
         try:
-            self.websocket = await websockets.connect(self.server_url, max_size=10 * 1024 * 1024)
+            self.websocket = await websockets.connect(
+                self.server_url,
+                max_size=10 * 1024 * 1024,
+                ping_interval=15,
+                ping_timeout=30
+            )
             # Register local ID and PIN
             await self.websocket.send(json.dumps({
                 "type": "register",
                 "id": self.my_id,
                 "pin": self.my_pin
             }))
-            # Start message listener
+            # Start message listener and dedicated fast frame sender
             asyncio.create_task(self._listen_server_messages())
+            asyncio.create_task(self._stream_sender_worker())
         except Exception as e:
             logger.error(f"Failed to connect to server: {e}")
             self._set_server_status("🔴 Server Offline", "#ef4444")
+            await asyncio.sleep(4)
+            asyncio.create_task(self._async_connect())
+
+    async def _stream_sender_worker(self):
+        """Dedicated high-speed loop: always transmits the latest frame with zero queue delay"""
+        while self.websocket and not self.websocket.closed:
+            await self.frame_send_event.wait()
+            self.frame_send_event.clear()
+            frame = self.latest_frame_to_send
+            if frame:
+                try:
+                    await self.websocket.send(frame)
+                except Exception as e:
+                    logger.error(f"Error sending frame: {e}")
+                    break
 
     async def _listen_server_messages(self):
         try:
             async for message in self.websocket:
-                # 1. Binary message (Incoming screen frame from Host)
+                # 1. Binary message (Incoming video frame)
                 if isinstance(message, bytes):
                     if self.viewer_window:
                         self.after(0, self.viewer_window.update_frame, message)
@@ -365,7 +444,6 @@ class AnyDeskCloneApp(ctk.CTk):
 
                 if msg_type == "registered":
                     self._set_server_status("🟢 Server Ready", "#22c55e")
-                    # Check status of remote ID if present
                     raw = self.entry_remote_id.get().replace(" ", "").strip()
                     if len(raw) == 9:
                         self.check_remote_status(raw)
@@ -385,9 +463,17 @@ class AnyDeskCloneApp(ctk.CTk):
                     if status == "success":
                         target_id = data.get("target_id")
                         self.after(0, self._open_viewer, target_id)
+                    elif status == "pending_approval":
+                        msg = data.get("message", "Waiting for remote user to accept...")
+                        self.lbl_connect_status.configure(text=msg, text_color="#f59e0b")
                     else:
                         err_msg = data.get("message", "Connection failed.")
                         self.after(0, self._show_connect_error, err_msg)
+
+                # Incoming connection request prompt for the Host PC
+                elif msg_type == "incoming_prompt":
+                    from_id = data.get("from_id")
+                    self.after(0, self._show_incoming_prompt, from_id)
 
                 elif msg_type == "start_streaming":
                     controller_id = data.get("controller_id")
@@ -413,11 +499,69 @@ class AnyDeskCloneApp(ctk.CTk):
                     self.after(0, self._handle_session_ended)
 
         except websockets.exceptions.ConnectionClosed:
-            logger.info("Server connection closed.")
-            self._set_server_status("🔴 Server Offline", "#ef4444")
+            logger.info("Server connection closed. Auto-reconnecting in 3s...")
+            self._set_server_status("🟡 Reconnecting...", "#eab308")
+            await asyncio.sleep(3)
+            asyncio.create_task(self._async_connect())
         except Exception as e:
             logger.error(f"Error in server listener: {e}")
             self._set_server_status("🔴 Server Error", "#ef4444")
+            await asyncio.sleep(4)
+            asyncio.create_task(self._async_connect())
+
+    def _show_incoming_prompt(self, from_id):
+        # Bring window to front if in background
+        self.restore_from_background()
+
+        # AnyDesk-style Accept / Reject prompt dialog
+        prompt_win = ctk.CTkToplevel(self)
+        prompt_win.title("Incoming Connection Request")
+        prompt_win.geometry("420x220")
+        prompt_win.resizable(False, False)
+        prompt_win.attributes("-topmost", True)
+
+        lbl = ctk.CTkLabel(
+            prompt_win,
+            text=f"🔔 Incoming Connection Request\n\nDevice ID {format_id(from_id)} wants to control this PC.\nDo you allow this session?",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            justify="center"
+        )
+        lbl.pack(pady=(25, 20), padx=20)
+
+        btn_row = ctk.CTkFrame(prompt_win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=40, pady=10)
+
+        def on_accept():
+            self._send_json({"type": "accept_prompt", "from_id": from_id})
+            prompt_win.destroy()
+
+        def on_reject():
+            self._send_json({"type": "reject_prompt", "from_id": from_id})
+            prompt_win.destroy()
+
+        btn_accept = ctk.CTkButton(
+            btn_row, 
+            text="✔ Accept", 
+            fg_color="#16a34a", 
+            hover_color="#15803d",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            width=150,
+            height=38,
+            command=on_accept
+        )
+        btn_accept.pack(side="left", padx=10)
+
+        btn_reject = ctk.CTkButton(
+            btn_row, 
+            text="✖ Reject", 
+            fg_color="#dc2626", 
+            hover_color="#b91c1c",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            width=150,
+            height=38,
+            command=on_reject
+        )
+        btn_reject.pack(side="right", padx=10)
 
     def _set_server_status(self, text, color):
         self.after(0, lambda: self.server_status_badge.configure(text=text, text_color=color))
@@ -443,11 +587,7 @@ class AnyDeskCloneApp(ctk.CTk):
             messagebox.showwarning("Notice", "You cannot connect to your own ID.")
             return
 
-        if not pin:
-            messagebox.showwarning("PIN Required", "Please enter the Security PIN for the remote machine.")
-            return
-
-        self.lbl_connect_status.configure(text="Connecting...", text_color="#38bdf8")
+        self.lbl_connect_status.configure(text="Requesting connection...", text_color="#38bdf8")
         self.btn_connect.configure(state="disabled")
 
         self._send_json({
@@ -473,16 +613,22 @@ class AnyDeskCloneApp(ctk.CTk):
     def _show_connect_error(self, message):
         self.btn_connect.configure(state="normal")
         self.lbl_connect_status.configure(text=message, text_color="#ef4444")
-        messagebox.showerror("Connection Error", message)
+        messagebox.showerror("Connection Notice", message)
 
     def _start_host_streaming(self):
         if self.streamer is None or not self.streamer.is_running:
             self.streamer = ScreenStreamer(
-                send_callback=self._send_binary,
-                quality=self.config.get("quality", 60),
-                fps_limit=self.config.get("fps_limit", 30)
+                send_callback=self._push_new_frame,
+                quality=self.config.get("quality", 55),
+                fps_limit=self.config.get("fps_limit", 25),
+                scale=self.config.get("scale", 0.75)
             )
             self.streamer.start()
+
+    def _push_new_frame(self, binary_data):
+        """Called by streamer thread: replaces latest frame and notifies sender loop"""
+        self.latest_frame_to_send = binary_data
+        self.loop.call_soon_threadsafe(self.frame_send_event.set)
 
     def _disconnect_session(self):
         logger.info("Disconnecting session...")
@@ -505,18 +651,6 @@ class AnyDeskCloneApp(ctk.CTk):
                 self.websocket.send(json.dumps(payload)), 
                 self.loop
             )
-
-    def _send_binary(self, binary_data):
-        if self.websocket:
-            asyncio.run_coroutine_threadsafe(
-                self.websocket.send(binary_data), 
-                self.loop
-            )
-
-    def on_app_close(self):
-        self._disconnect_session()
-        self.destroy()
-        sys.exit(0)
 
 if __name__ == "__main__":
     app = AnyDeskCloneApp()

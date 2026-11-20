@@ -1,11 +1,21 @@
 import os
+import sys
 import json
 import random
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+def get_config_dir():
+    # Use permanent system APPDATA directory so the ID NEVER changes even when compiled to .exe
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        folder = os.path.join(appdata, "AnyDeskClone")
+    else:
+        folder = os.path.join(os.path.expanduser("~"), ".anydeskclone")
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+CONFIG_FILE = os.path.join(get_config_dir(), "config.json")
 
 def generate_device_id():
-    # Generates a standard 9-digit ID formatted like AnyDesk: e.g. 849 203 118
     return "".join(str(random.randint(0, 9)) for _ in range(9))
 
 def format_id(raw_id):
@@ -29,8 +39,9 @@ def load_config():
         "id": generate_device_id(),
         "pin": "1234",
         "server_url": "wss://anydesk-relay-production.up.railway.app",
-        "quality": 60,
-        "fps_limit": 30
+        "quality": 55,
+        "fps_limit": 25,
+        "scale": 0.75
     }
     save_config(new_config)
     return new_config
