@@ -21,11 +21,12 @@ class RemoteViewerWindow(ctk.CTkToplevel):
         self.geometry("1100x750")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # Performance counters
+        # Performance counters & state
         self.last_frame_time = time.time()
         self.frame_count = 0
         self.current_fps = 0
         self.photo_image = None
+        self.image_item = None
         self.canvas_width = 1000
         self.canvas_height = 650
         self.is_fullscreen = False
@@ -83,6 +84,15 @@ class RemoteViewerWindow(ctk.CTkToplevel):
         self.canvas = tk.Canvas(self.canvas_container, bg="#121214", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
+        # Persistent canvas item for video frames
+        self.image_item = self.canvas.create_image(0, 0, anchor="nw")
+        self.text_item = self.canvas.create_text(
+            500, 300, 
+            text="Connecting to video stream...", 
+            fill="#a1a1aa", 
+            font=("Arial", 16)
+        )
+
     def _bind_events(self):
         # Resize listener
         self.canvas.bind("<Configure>", self._on_canvas_resize)
@@ -105,6 +115,8 @@ class RemoteViewerWindow(ctk.CTkToplevel):
     def _on_canvas_resize(self, event):
         self.canvas_width = max(event.width, 100)
         self.canvas_height = max(event.height, 100)
+        if self.text_item:
+            self.canvas.coords(self.text_item, self.canvas_width // 2, self.canvas_height // 2)
 
     def _get_normalized_coords(self, x, y):
         norm_x = max(0.0, min(1.0, x / self.canvas_width))
@@ -163,7 +175,7 @@ class RemoteViewerWindow(ctk.CTkToplevel):
 
     def update_frame(self, jpeg_bytes):
         try:
-            # High-speed OpenCV decoding & scaling (50x faster than pure PIL)
+            # High-speed OpenCV decoding & scaling
             nparr = np.frombuffer(jpeg_bytes, np.uint8)
             img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img_bgr is None:
@@ -174,10 +186,15 @@ class RemoteViewerWindow(ctk.CTkToplevel):
 
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(img_rgb)
-            self.photo_image = ImageTk.PhotoImage(pil_image)
+            
+            # Explicit master=self.canvas guarantees proper Tkinter binding and prevents black screens
+            self.photo_image = ImageTk.PhotoImage(pil_image, master=self.canvas)
+            self.canvas.itemconfig(self.image_item, image=self.photo_image)
 
-            self.canvas.delete("all")
-            self.canvas.create_image(0, 0, image=self.photo_image, anchor="nw")
+            # Hide initial placeholder text once first frame is rendered
+            if self.text_item:
+                self.canvas.delete(self.text_item)
+                self.text_item = None
 
             # FPS Calculation
             self.frame_count += 1
