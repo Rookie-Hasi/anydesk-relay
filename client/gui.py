@@ -613,8 +613,14 @@ class AnyDeskCloneApp(ctk.CTk):
             self._send_json(cmd_dict)
 
     def _on_webrtc_frame(self, img_bgr):
-        if self.viewer_window:
+        if self.viewer_window and self.viewer_window.winfo_exists():
+            # Schedule frame render on the Tkinter main thread
             self.after(0, self.viewer_window.update_bgr_frame, img_bgr)
+
+    def _update_viewer_status(self, text):
+        """Update the status text shown while WebRTC is negotiating"""
+        if self.viewer_window and self.viewer_window.winfo_exists():
+            self.after(0, self.viewer_window.set_status_text, text)
 
     def _open_viewer(self, target_id):
         self.btn_connect.configure(state="normal")

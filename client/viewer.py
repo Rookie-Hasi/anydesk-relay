@@ -88,9 +88,10 @@ class RemoteViewerWindow(ctk.CTkToplevel):
         self.image_item = self.canvas.create_image(0, 0, anchor="nw")
         self.text_item = self.canvas.create_text(
             500, 300, 
-            text="Connecting to video stream...", 
+            text="⏳ Establishing Direct P2P connection...\nThis may take 5-15 seconds.", 
             fill="#a1a1aa", 
-            font=("Arial", 16)
+            font=("Arial", 15),
+            justify="center"
         )
 
     def _bind_events(self):
@@ -172,6 +173,11 @@ class RemoteViewerWindow(ctk.CTkToplevel):
             "key": event.keysym,
             "char": event.char
         })
+
+    def set_status_text(self, text):
+        """Update the placeholder text while waiting for P2P to establish"""
+        if self.text_item:
+            self.canvas.itemconfig(self.text_item, text=text)
 
     def update_bgr_frame(self, img_bgr):
         try:
