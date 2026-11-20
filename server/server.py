@@ -89,33 +89,62 @@ async def handle_client(websocket):
 
                     target_info = clients[target_id]
 
-                    # Verify Security PIN
-                    if target_info["pin"] and target_info["pin"] != provided_pin:
-                        logger.warning(f"Connection rejected for {target_id}: Invalid PIN entered.")
+                    # If PIN matches: Instant unattended access
+                    if target_info["pin"] and provided_pin == target_info["pin"]:
+                        clients[client_id]["in_session_with"] = target_id
+                        target_info["in_session_with"] = client_id
+
+                        await target_info["ws"].send(json.dumps({
+                            "type": "start_streaming",
+                            "controller_id": client_id
+                        }))
                         await websocket.send(json.dumps({
                             "type": "connect_response",
-                            "status": "error",
-                            "message": "Access Denied: Incorrect Security PIN."
+                            "status": "success",
+                            "target_id": target_id
                         }))
-                        continue
+                        logger.info(f"Unattended session established between {client_id} and {target_id}")
+                    else:
+                        # PIN missing or incorrect -> Forward Access Request popup to target PC
+                        logger.info(f"Forwarding access prompt to target {target_id} from {client_id}")
+                        await target_info["ws"].send(json.dumps({
+                            "type": "incoming_prompt",
+                            "from_id": client_id
+                        }))
+                        await websocket.send(json.dumps({
+                            "type": "connect_response",
+                            "status": "pending_approval",
+                            "message": "Access requested: Waiting for host to click Accept..."
+                        }))
 
-                    # Establish session pairing
-                    clients[client_id]["in_session_with"] = target_id
-                    target_info["in_session_with"] = client_id
+                # 4b. Host Accepts Connection Request
+                elif msg_type == "accept_prompt":
+                    requester_id = str(data.get("from_id", "")).replace(" ", "").strip()
+                    if requester_id in clients and is_ws_open(clients[requester_id]["ws"]):
+                        clients[client_id]["in_session_with"] = requester_id
+                        clients[requester_id]["in_session_with"] = client_id
 
-                    # Notify Host to begin streaming
-                    await target_info["ws"].send(json.dumps({
-                        "type": "start_streaming",
-                        "controller_id": client_id
-                    }))
+                        await websocket.send(json.dumps({
+                            "type": "start_streaming",
+                            "controller_id": requester_id
+                        }))
+                        await clients[requester_id]["ws"].send(json.dumps({
+                            "type": "connect_response",
+                            "status": "success",
+                            "target_id": client_id
+                        }))
+                        logger.info(f"Host {client_id} accepted request from {requester_id}")
 
-                    # Notify Controller that connection is accepted
-                    await websocket.send(json.dumps({
-                        "type": "connect_response",
-                        "status": "success",
-                        "target_id": target_id
-                    }))
-                    logger.info(f"Session established between Controller {client_id} and Host {target_id}")
+                # 4c. Host Rejects Connection Request
+                elif msg_type == "reject_prompt":
+                    requester_id = str(data.get("from_id", "")).replace(" ", "").strip()
+                    if requester_id in clients and is_ws_open(clients[requester_id]["ws"]):
+                        await clients[requester_id]["ws"].send(json.dumps({
+                            "type": "connect_response",
+                            "status": "error",
+                            "message": "Connection request was REJECTED by host."
+                        }))
+                        logger.info(f"Host {client_id} rejected request from {requester_id}")
 
                 # 5. Relay input commands (mouse, keyboard) to the Host
                 elif msg_type in ("mouse_event", "key_event", "resolution_info"):
